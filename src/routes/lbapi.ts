@@ -36,7 +36,7 @@ const lbError = (status: number, error: string) => Response.json({ code: status,
 async function userForToken(env: Env, token: string): Promise<SessionUser | null> {
   const hash = await sha256(token);
   const row = await env.DB.prepare(
-    `SELECT users.id, users.handle, users.username, users.name, users.email, users.identity_picture, api_tokens.last_used_at
+    `SELECT users.id, users.handle, users.name, users.email, users.identity_picture, api_tokens.last_used_at
      FROM api_tokens JOIN users ON users.id = api_tokens.user_id
      WHERE api_tokens.token_hash = ? AND api_tokens.revoked_at IS NULL`).bind(hash)
     .first<SessionUser>();
@@ -64,15 +64,10 @@ async function requireFreshUser(request: Request, env: Env): Promise<SessionUser
   return user;
 }
 
-async function userByName(env: Env, name: string): Promise<{ id: string; handle: string; username: string | null } | null> {
-  const lower = name.toLowerCase();
-  return env.DB.prepare(
-    'SELECT id, handle, username FROM users WHERE username = ? OR (username IS NULL AND handle = ?)')
-    .bind(lower, lower).first<{ id: string; handle: string; username: string | null }>();
+async function userByName(env: Env, name: string): Promise<{ id: string; handle: string } | null> {
+  return env.DB.prepare('SELECT id, handle FROM users WHERE handle = ?').bind(name.toLowerCase())
+    .first<{ id: string; handle: string }>();
 }
-
-/** The public API name: the chosen username, or the Identity handle until one is chosen. */
-const apiName = (user: { handle: string; username?: string | null }) => user.username ?? user.handle;
 
 // ── Submitting ──
 
@@ -157,7 +152,7 @@ app.get('/validate-token', async c => {
   if (!token) return c.json({ code: 400, error: 'No token was sent to the endpoint.' }, 400);
   const user = await userForToken(c.env, token);
   if (!user) return c.json({ code: 200, message: 'Token invalid.', valid: false });
-  return c.json({ code: 200, message: 'Token valid.', valid: true, user_name: apiName(user) });
+  return c.json({ code: 200, message: 'Token valid.', valid: true, user_name: user.handle });
 });
 
 // ── Fetching (public, like ListenBrainz) ──
@@ -175,7 +170,7 @@ app.get('/user/:user_name/listens', async c => {
   const user = await userByName(c.env, name);
   if (!user) return lbError(404, `user ${name} not found`);
 
-  await meterRead(c.req.raw, c.env, `/1/user/${apiName(user)}/listens`, API_FETCH_FEE_CENTS);
+  await meterRead(c.req.raw, c.env, `/1/user/${user.handle}/listens`, API_FETCH_FEE_CENTS);
   const countParam = Number(c.req.query('count'));
   const count = Number.isInteger(countParam) && countParam > 0 ? Math.min(countParam, 100) : 25;
   const maxTs = Number(c.req.query('max_ts'));
@@ -199,8 +194,8 @@ app.get('/user/:user_name/listens', async c => {
   return c.json({
     payload: {
       count: rows.length,
-      user_id: apiName(user),
-      listens: rows.map(row => listenJson(row, apiName(user))),
+      user_id: user.handle,
+      listens: rows.map(row => listenJson(row, user.handle)),
     },
   });
 });
@@ -209,7 +204,7 @@ app.get('/user/:user_name/listen-count', async c => {
   const name = c.req.param('user_name');
   const user = await userByName(c.env, name);
   if (!user) return lbError(404, `user ${name} not found`);
-  await meterRead(c.req.raw, c.env, `/1/user/${apiName(user)}/listen-count`, API_FETCH_FEE_CENTS);
+  await meterRead(c.req.raw, c.env, `/1/user/${user.handle}/listen-count`, API_FETCH_FEE_CENTS);
   const row = await c.env.DB.prepare('SELECT COUNT(*) AS count FROM listens WHERE user_id = ?')
     .bind(user.id).first<{ count: number }>();
   return c.json({ payload: { count: row?.count ?? 0 } });
@@ -219,18 +214,18 @@ app.get('/user/:user_name/playing-now', async c => {
   const name = c.req.param('user_name');
   const user = await userByName(c.env, name);
   if (!user) return lbError(404, `user ${name} not found`);
-  await meterRead(c.req.raw, c.env, `/1/user/${apiName(user)}/playing-now`, API_FETCH_FEE_CENTS);
+  await meterRead(c.req.raw, c.env, `/1/user/${user.handle}/playing-now`, API_FETCH_FEE_CENTS);
   const row = await c.env.DB.prepare('SELECT * FROM playing_now WHERE user_id = ? AND expires_at > ?')
     .bind(user.id, Date.now()).first<ListenRow & { expires_at: number }>();
   const listens = row
     ? [(() => {
-        const json = listenJson(row, apiName(user)) as Record<string, unknown>;
+        const json = listenJson(row, user.handle) as Record<string, unknown>;
         delete json.listened_at;
         return json;
       })()]
     : [];
   return c.json({
-    payload: { count: listens.length, user_id: apiName(user), playing_now: true, listens },
+    payload: { count: listens.length, user_id: user.handle, playing_now: true, listens },
   });
 });
 
@@ -248,7 +243,7 @@ app.get('/user/:user_name/charts', async c => {
   if (!user) return lbError(404, `user ${name} not found`);
   const range = RANGES[c.req.query('range') ?? ''] ?? RANGES.month;
   const rangeName = RANGES[c.req.query('range') ?? ''] ? (c.req.query('range') as string) : 'month';
-  await meterRead(c.req.raw, c.env, `/1/user/${apiName(user)}/charts`, CHART_FEE_CENTS);
+  await meterRead(c.req.raw, c.env, `/1/user/${user.handle}/charts`, CHART_FEE_CENTS);
 
   let buckets: { period: string; listen_count: number }[];
   if (range.monthly) {
@@ -273,7 +268,7 @@ app.get('/user/:user_name/charts', async c => {
   }
   return c.json({
     payload: {
-      user_id: apiName(user),
+      user_id: user.handle,
       range: rangeName,
       fee: 'This chart was not free.',
       buckets,

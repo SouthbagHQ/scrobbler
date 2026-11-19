@@ -209,7 +209,7 @@ async function upsertUser(env: Env, user: IdentityUser, now: number): Promise<{ 
   return { created: true };
 }
 
-const sessionSelect = `SELECT users.id, users.handle, users.username, users.name, users.email, users.identity_picture, sessions.expires_at
+const sessionSelect = `SELECT users.id, users.handle, users.name, users.email, users.identity_picture, sessions.expires_at
   FROM sessions JOIN users ON users.id = sessions.user_id WHERE sessions.token_hash = ?`;
 
 async function loadSession(env: Env, tokenHash: string): Promise<SessionUser | null> {

@@ -71,13 +71,12 @@ async function signedIn(user, { welcome }) {
     ${welcome ? `<div class="notice">Your account has been opened. Your listening will be itemised from now on.</div>` : ''}
     <p class="muted">Loading your paperwork…</p>${FOOTER}`;
 
-  const apiName = user.username ?? user.handle;
   const [statsRes, listensRes, nowRes, tokensRes, chartsRes] = await Promise.all([
     api.get('/api/me/stats'),
-    api.get(`/1/user/${encodeURIComponent(apiName)}/listens?count=25`),
-    api.get(`/1/user/${encodeURIComponent(apiName)}/playing-now`),
+    api.get(`/1/user/${encodeURIComponent(user.handle)}/listens?count=25`),
+    api.get(`/1/user/${encodeURIComponent(user.handle)}/playing-now`),
     api.get('/api/tokens'),
-    api.get(`/1/user/${encodeURIComponent(apiName)}/charts?range=month`),
+    api.get(`/1/user/${encodeURIComponent(user.handle)}/charts?range=month`),
   ]);
   if (statsRes.status === 423 || statsRes.status === 503) {
     app.innerHTML = `${header(user)}<div class="error">${esc(statsRes.body.error)}</div>${FOOTER}`;
@@ -111,30 +110,6 @@ async function signedIn(user, { welcome }) {
         <div class="stat"><div class="n">${esc(stats.fees_paid)}</div><div class="l">What Kevin has taken (non-refundable)</div></div>
         <div class="stat"><div class="n">${cents(stats.fee_per_track_cents)}</div><div class="l">Fee per track (correct)</div></div>
       </div>
-    </div>
-
-    <div class="panel">
-      <h2>Your username</h2>
-      ${user.username
-        ? `<p>Your username is <strong>${esc(user.username)}</strong>. Clients and URLs use it.
-        Changing it costs $1.00, collected from your Southbag Online Banking account.
-        The old name stops working. Fees are final.</p>
-        <form id="username">
-          <label for="u-name">new username (the old one is kept by Kevin)</label>
-          <input id="u-name" type="text" placeholder="Enter current username" autocomplete="off">
-          <p style="margin-top:10px"><button type="submit" class="btn-small">Change username ($1.00)</button>
-          <button type="button" class="btn-large" onclick="alert('fees are final')">Do not change username</button></p>
-        </form>`
-        : `<p>Southbag Identity calls you @${esc(user.handle)}. That name is for accounts.
-        Choose the username your clients and URLs will use instead. The first one is free.
-        The next one costs $1.00. Choose carefully. Or don't. Kevin is paid either way.</p>
-        <form id="username">
-          <label for="u-name">username (your real one, this time)</label>
-          <input id="u-name" type="text" placeholder="Enter password" autocomplete="off">
-          <a class="button btn-large" href="https://support.southbag.cc/ai">What's a username?</a>
-          <p style="margin-top:10px"><button type="submit" class="btn-small">Claim username (free)</button></p>
-        </form>`}
-      <div id="username-result"></div>
     </div>
 
     <div class="panel">
@@ -230,21 +205,6 @@ Authorization: Token &lt;your token&gt;</pre>
       result.innerHTML = `<div class="notice">Already on file. No further fee was collected.</div>`;
     } else {
       result.innerHTML = `<div class="error">${esc(body.error || 'Filing failed.')}</div>`;
-    }
-  });
-
-  document.getElementById('username').addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const result = document.getElementById('username-result');
-    const { status, body } = await api.post('/api/me/username', {
-      username: document.getElementById('u-name').value,
-    });
-    if (status === 200) {
-      user.username = body.username;
-      result.innerHTML = `<div class="notice">${esc(body.notice || 'Username recorded.')}</div>`;
-      setTimeout(() => signedIn(user, { welcome: false }), 1200);
-    } else {
-      result.innerHTML = `<div class="error">${esc(body.error || 'Username rejected.')}</div>`;
     }
   });
 
