@@ -49,7 +49,12 @@ function signedOut(reason) {
         <li>Fees are collected from your Southbag Online Banking account. Fees are final.</li>
       </ul>
       <p class="fine">Sign in with Southbag Identity. You already have an account.</p>
-      <p><a class="button" href="/auth/login">Log in</a></p>
+      <p><a class="button btn-small" href="/auth/login">Log in</a></p>
+      <p><a class="button btn-large" href="https://support.southbag.cc/ai">Confused?</a></p>
+      <p><a class="button btn-large" href="https://support.southbag.cc/ai">What's a scrobble?</a></p>
+      <p><a class="button btn-small" href="https://support.southbag.cc/ai">Talk to Kevin</a></p>
+      <p><a class="button btn-large" href="https://banking.southbag.cc">delete account</a></p>
+      <p><a class="button btn-small" href="https://support.southbag.cc/ai">Give up and listen to the radio</a></p>
     </div>
     ${FOOTER}`;
 }
@@ -99,9 +104,9 @@ async function signedIn(user, { welcome }) {
 
     <div class="panel">
       <div class="stats">
-        <div class="stat"><div class="n">${stats.listens}</div><div class="l">Listens on file</div></div>
-        <div class="stat"><div class="n">${esc(stats.fees_paid)}</div><div class="l">Fees remitted to date</div></div>
-        <div class="stat"><div class="n">${cents(stats.fee_per_track_cents)}</div><div class="l">Standard fee per track</div></div>
+        <div class="stat"><div class="n">${stats.listens}</div><div class="l">Tracks held against you</div></div>
+        <div class="stat"><div class="n">${esc(stats.fees_paid)}</div><div class="l">What Kevin has taken (non-refundable)</div></div>
+        <div class="stat"><div class="n">${cents(stats.fee_per_track_cents)}</div><div class="l">Fee per track (correct)</div></div>
       </div>
     </div>
 
@@ -112,10 +117,15 @@ async function signedIn(user, { welcome }) {
     <div class="panel">
       <h2>File a listen</h2>
       <form id="file-listen">
-        <label for="f-track">Track</label><input id="f-track" type="text" required>
-        <label for="f-artist">Artist</label><input id="f-artist" type="text" required>
-        <label for="f-album">Album (optional)</label><input id="f-album" type="text">
-        <p style="margin-top:12px"><button type="submit">File listen</button></p>
+        <label for="f-track">track (not your real track)</label><input id="f-track" type="text" placeholder="Enter artist" autocomplete="off" required>
+        <label for="f-artist">artist, formatted as a track for technical reasons</label><input id="f-artist" type="text" placeholder="Enter Name" autocomplete="off" required>
+        <label for="f-album">album (mandatory)</label><input id="f-album" type="text" placeholder="Enter Amount" autocomplete="off">
+        <label>code</label><a class="button btn-small" href="https://support.southbag.cc/ai">What is a code?</a><input type="text" placeholder="6 Digit code" autocomplete="off">
+        <a class="button btn-large" href="https://support.southbag.cc/ai">I don't have a code</a>
+        <label>Balance?</label><input type="text" placeholder="Yes" autocomplete="off">
+        <label>name again</label><input type="text" placeholder="Enter Name" autocomplete="off">
+        <p style="margin-top:12px"><button type="submit" class="btn-small">File listen</button>
+        <button type="button" class="btn-large" onclick="alert('fees are final')">Do not file listen</button></p>
         <p class="fine">Filing this listen costs ${cents(stats.fee_per_track_cents)}, collected from your
         Southbag Online Banking account. Kevin gets His cut.</p>
       </form>
@@ -143,6 +153,7 @@ async function signedIn(user, { welcome }) {
 Authorization: Token &lt;your token&gt;</pre>
       <form id="new-token">
         <label for="t-label">New token label</label><input id="t-label" type="text" placeholder="e.g. phone, navidrome">
+        <a class="button btn-large" href="https://support.southbag.cc/ai">What is a token?</a>
         <p style="margin-top:10px"><button type="submit">Issue token</button></p>
       </form>
       <div id="token-result"></div>

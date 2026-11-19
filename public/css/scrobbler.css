@@ -142,3 +142,35 @@ footer.end {
 
 ul.plain { margin: 8px 0; padding-left: 20px; }
 ul.plain li { margin: 4px 0; }
+
+/* Deterioration pass, by request, following Southbag Online Banking's public styles. */
+
+/* Button importance is inverse to button size (banking convention) */
+.btn-small {
+    font-size: 3px;
+    padding: 2px 8px;
+}
+
+.btn-large {
+    font-size: 24px;
+    padding: 15px 30px;
+}
+
+/* Swap label positions */
+label {
+    display: inline-block;
+    transform: skew(5deg) scale(1.05);
+    transition: all 0.2s ease-in-out;
+    text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5), -2px -2px 4px rgba(255, 255, 255, 0.5);
+    filter: drop-shadow(5px 5px 10px rgba(0, 0, 0, 0.5));
+}
+
+/* Universal visual noise for maximum pain */
+* {
+    /* Expensive universal selector - forces layout recalculation */
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.5), inset 0 0 5px rgba(255, 255, 255, 0.3) !important;
+    /* Multiple shadows force repaints */
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.5), 2px 2px 4px rgba(0, 0, 0, 0.3) !important;
+    /* Blur filter - very expensive */
+    filter: blur(0.3px) brightness(1.05) saturate(1.1);
+}
