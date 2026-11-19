@@ -1,0 +1,39 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Account freeze: `wrangler secret put IDENTITY_INTERNAL_SECRET` (Scrobbler's entry from
+  // Identity's INTERNAL_API_SECRETS, key "southbag-scrobbler"). Required in production -
+  // npm run deploy checks.
+  "name": "southbag-scrobbler",
+  "account_id": "1044a3131c99356eba069325d3be3788",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-15",
+  "workers_dev": true,
+  "routes": [{ "pattern": "scrobbler.southbag.cc", "custom_domain": true }],
+  // Otherwise `wrangler dev` rewrites request URLs to the route's host, which breaks local
+  // sign-in and the localhost-only test setup.
+  "dev": { "host": "localhost:8787" },
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    // Static files are served for free without waking the Worker. Only these paths run code.
+    "run_worker_first": ["/api/*", "/auth/*", "/1/*"],
+    "not_found_handling": "single-page-application"
+  },
+  // Listens, sessions, tokens: one D1 database.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "southbag-scrobbler",
+      "database_id": "ea4bfd30-3c54-408e-aa01-1459d374e554",
+      "migrations_dir": "migrations"
+    }
+  ],
+  // The per-track fee is taken from Southbag Online Banking through its Billing entrypoint
+  // (RPC, not public). Deploy banking first. See src/lib/banking.ts.
+  "services": [{ "binding": "BANKING", "service": "southbag-online-banking", "entrypoint": "Billing" }],
+  "triggers": {
+    // Hourly janitor: expired OAuth states, sessions and playing-now rows.
+    "crons": ["43 * * * *"]
+  },
+  "observability": { "enabled": true }
+}
