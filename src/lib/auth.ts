@@ -192,8 +192,23 @@ async function upsertUser(env: Env, user: IdentityUser, now: number): Promise<{ 
   const existing = await env.DB.prepare('SELECT id FROM users WHERE id = ?').bind(user.sub).first();
   const name = (user.name || user.given_name || user.email?.split('@')[0] || 'Valued Customer').slice(0, 50);
   if (existing) {
-    await env.DB.prepare('UPDATE users SET email = ?, identity_picture = ?, updated_at = ? WHERE id = ?')
-      .bind(user.email || null, user.picture || null, now, user.sub).run();
+    // The canonical handle lives in Identity: when it sends a preferred_username, follow renames here.
+    let nextHandle: string | null = null;
+    if (user.preferred_username) {
+      const candidate = baseHandle(user);
+      const current = await env.DB.prepare('SELECT handle FROM users WHERE id = ?').bind(user.sub).first<{ handle: string }>();
+      if (current && candidate !== current.handle) {
+        const taken = await env.DB.prepare('SELECT 1 FROM users WHERE handle = ? AND id != ?').bind(candidate, user.sub).first();
+        if (!taken) nextHandle = candidate;
+      }
+    }
+    if (nextHandle) {
+      await env.DB.prepare('UPDATE users SET email = ?, identity_picture = ?, handle = ?, updated_at = ? WHERE id = ?')
+        .bind(user.email || null, user.picture || null, nextHandle, now, user.sub).run();
+    } else {
+      await env.DB.prepare('UPDATE users SET email = ?, identity_picture = ?, updated_at = ? WHERE id = ?')
+        .bind(user.email || null, user.picture || null, now, user.sub).run();
+    }
     return { created: false };
   }
   const base = baseHandle(user);
