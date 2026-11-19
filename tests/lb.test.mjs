@@ -144,15 +144,14 @@ test('a frozen account cannot file (423); unknown status fails closed (503)', as
 
 test('the fee is charged per track through Banking', async () => {
   const before = await alice.get('/api/me/stats');
-  assert.equal(before.body.fees_paid_cents, 5, 'one listen so far');
   const manual = await alice.post('/api/scrobble', { artist_name: 'Manual Entry', track_name: 'By Hand' });
   assert.equal(manual.status, 200);
   assert.equal(manual.body.status, 'recorded');
   assert.equal(manual.body.fee.amount, '$0.05');
   const after = await alice.get('/api/me/stats');
   assert.equal(after.body.listens, 2);
-  assert.equal(after.body.fees_paid_cents, 10);
-  assert.equal(after.body.fees_paid, '$0.10');
+  // 5c for the scrobble + 1c for this metered stats read
+  assert.equal(after.body.fees_paid_cents - before.body.fees_paid_cents, 6, 'scrobble fee plus the stats read fee');
 });
 
 test('future listens are rejected', async () => {
@@ -195,4 +194,60 @@ test('/api/me answers signed-out and signed-in', async () => {
   assert.equal(me.body.authenticated, true);
   assert.equal(me.body.user.handle, 'alice');
   assert.equal(me.body.fee_per_track_cents, 5);
+});
+
+test('metered API: an authenticated fetch costs 1c, anonymous is free', async () => {
+  const before = await bob.get('/api/me/stats');
+  const paid = await bob.tokenGet('/1/user/bob/listen-count');
+  assert.equal(paid.status, 200);
+  const free = await call('GET', '/1/user/bob/listen-count');
+  assert.equal(free.status, 200);
+  const after = await bob.get('/api/me/stats');
+  // one metered listen-count (1c) + the second stats read (1c); the anonymous read was free
+  assert.equal(after.body.fees_paid_cents - before.body.fees_paid_cents, 2, 'one fetch and one stats read, the anonymous read free');
+});
+
+test('charts: itemised by day over the API, 10c when authenticated', async () => {
+  const chart = await call('GET', '/1/user/bob/charts?range=week');
+  assert.equal(chart.status, 200);
+  assert.equal(chart.body.payload.user_id, 'bob');
+  assert.equal(chart.body.payload.range, 'week');
+  assert.equal(chart.body.payload.buckets.length, 8, 'seven days plus today, zero-filled');
+
+  const before = await bob.get('/api/me/stats');
+  const paidChart = await bob.tokenGet('/1/user/bob/charts?range=week');
+  assert.equal(paidChart.status, 200);
+  const after = await bob.get('/api/me/stats');
+  assert.equal(after.body.fees_paid_cents - before.body.fees_paid_cents, 11, 'the 10c chart plus the second stats read');
+});
+
+test('usernames: first choice free, changes carry a fee, old names stop working', async () => {
+  const bad = await alice.post('/api/me/username', { username: 'NO!' });
+  assert.equal(bad.status, 400);
+
+  const chosen = await alice.post('/api/me/username', { username: 'AliciaKeys' });
+  assert.equal(chosen.status, 200);
+  assert.equal(chosen.body.username, 'aliciakeys', 'stored lowercase');
+  assert.equal(chosen.body.fee_cents, 0, 'the first one is free');
+
+  const byName = await call('GET', '/1/user/aliciakeys/listen-count');
+  assert.equal(byName.status, 200);
+  const oldGone = await call('GET', '/1/user/alice/listen-count');
+  assert.equal(oldGone.status, 404, 'the handle no longer resolves once a username is chosen');
+
+  const taken = await bob.post('/api/me/username', { username: 'aliciakeys' });
+  assert.equal(taken.status, 409);
+
+  const tokenCheck = await alice.tokenGet('/1/validate-token');
+  assert.equal(tokenCheck.body.user_name, 'aliciakeys');
+
+  const changed = await alice.post('/api/me/username', { username: 'alicia2' });
+  assert.equal(changed.status, 200);
+  assert.equal(changed.body.fee_cents, 100, 'the change costs $1.00');
+  assert.equal(changed.body.fee, '$1.00');
+  const previousGone = await call('GET', '/1/user/aliciakeys/listen-count');
+  assert.equal(previousGone.status, 404, 'the old username no longer works');
+  const current = await call('GET', '/1/user/alicia2/charts?range=week');
+  assert.equal(current.status, 200);
+  assert.equal(current.body.payload.user_id, 'alicia2');
 });

@@ -12,6 +12,7 @@ export interface Env {
 export interface SessionUser {
   id: string;
   handle: string;
+  username: string | null;
   name: string;
   email: string | null;
   identity_picture: string | null;

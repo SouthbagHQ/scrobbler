@@ -5,6 +5,7 @@
 //   GET  /1/user/:user_name/listens
 //   GET  /1/user/:user_name/listen-count
 //   GET  /1/user/:user_name/playing-now
+//   GET  /1/user/:user_name/charts          itemised listening over time (a fee applies)
 //   POST /1/playing-now/delete
 //   POST /1/delete-listen           refused: Southbag does not delete, and fees are final.
 //
@@ -14,6 +15,7 @@
 import { Hono } from 'hono';
 import type { AppEnv, Env, SessionUser } from '../env';
 import { session } from '../lib/auth';
+import { API_FETCH_FEE_CENTS, CHART_FEE_CENTS, meter } from '../lib/banking';
 import { body, fail } from '../lib/http';
 import { centralStatus, FROZEN_TEXT, STATUS_UNKNOWN_TEXT } from '../lib/identity';
 import { sha256 } from '../lib/ids';
@@ -34,7 +36,7 @@ const lbError = (status: number, error: string) => Response.json({ code: status,
 async function userForToken(env: Env, token: string): Promise<SessionUser | null> {
   const hash = await sha256(token);
   const row = await env.DB.prepare(
-    `SELECT users.id, users.handle, users.name, users.email, users.identity_picture, api_tokens.last_used_at
+    `SELECT users.id, users.handle, users.username, users.name, users.email, users.identity_picture, api_tokens.last_used_at
      FROM api_tokens JOIN users ON users.id = api_tokens.user_id
      WHERE api_tokens.token_hash = ? AND api_tokens.revoked_at IS NULL`).bind(hash)
     .first<SessionUser>();
@@ -62,10 +64,15 @@ async function requireFreshUser(request: Request, env: Env): Promise<SessionUser
   return user;
 }
 
-async function userByName(env: Env, name: string): Promise<{ id: string; handle: string } | null> {
-  return env.DB.prepare('SELECT id, handle FROM users WHERE handle = ?').bind(name.toLowerCase())
-    .first<{ id: string; handle: string }>();
+async function userByName(env: Env, name: string): Promise<{ id: string; handle: string; username: string | null } | null> {
+  const lower = name.toLowerCase();
+  return env.DB.prepare(
+    'SELECT id, handle, username FROM users WHERE username = ? OR (username IS NULL AND handle = ?)')
+    .bind(lower, lower).first<{ id: string; handle: string; username: string | null }>();
 }
+
+/** The public API name: the chosen username, or the Identity handle until one is chosen. */
+const apiName = (user: { handle: string; username?: string | null }) => user.username ?? user.handle;
 
 // ── Submitting ──
 
@@ -150,16 +157,25 @@ app.get('/validate-token', async c => {
   if (!token) return c.json({ code: 400, error: 'No token was sent to the endpoint.' }, 400);
   const user = await userForToken(c.env, token);
   if (!user) return c.json({ code: 200, message: 'Token invalid.', valid: false });
-  return c.json({ code: 200, message: 'Token valid.', valid: true, user_name: user.handle });
+  return c.json({ code: 200, message: 'Token valid.', valid: true, user_name: apiName(user) });
 });
 
 // ── Fetching (public, like ListenBrainz) ──
+
+// Reading data over the API costs the reader a small fee, collected when the request
+// carries a credential (session or token). Anonymous reads stay free, like ListenBrainz.
+async function meterRead(request: Request, env: Env, endpoint: string, amount: number) {
+  const caller = await resolveUser(request, env);
+  if (!caller) return;
+  await meter(env, caller, endpoint, amount);
+}
 
 app.get('/user/:user_name/listens', async c => {
   const name = c.req.param('user_name');
   const user = await userByName(c.env, name);
   if (!user) return lbError(404, `user ${name} not found`);
 
+  await meterRead(c.req.raw, c.env, `/1/user/${apiName(user)}/listens`, API_FETCH_FEE_CENTS);
   const countParam = Number(c.req.query('count'));
   const count = Number.isInteger(countParam) && countParam > 0 ? Math.min(countParam, 100) : 25;
   const maxTs = Number(c.req.query('max_ts'));
@@ -183,8 +199,8 @@ app.get('/user/:user_name/listens', async c => {
   return c.json({
     payload: {
       count: rows.length,
-      user_id: user.handle,
-      listens: rows.map(row => listenJson(row, user.handle)),
+      user_id: apiName(user),
+      listens: rows.map(row => listenJson(row, apiName(user))),
     },
   });
 });
@@ -193,6 +209,7 @@ app.get('/user/:user_name/listen-count', async c => {
   const name = c.req.param('user_name');
   const user = await userByName(c.env, name);
   if (!user) return lbError(404, `user ${name} not found`);
+  await meterRead(c.req.raw, c.env, `/1/user/${apiName(user)}/listen-count`, API_FETCH_FEE_CENTS);
   const row = await c.env.DB.prepare('SELECT COUNT(*) AS count FROM listens WHERE user_id = ?')
     .bind(user.id).first<{ count: number }>();
   return c.json({ payload: { count: row?.count ?? 0 } });
@@ -202,17 +219,65 @@ app.get('/user/:user_name/playing-now', async c => {
   const name = c.req.param('user_name');
   const user = await userByName(c.env, name);
   if (!user) return lbError(404, `user ${name} not found`);
+  await meterRead(c.req.raw, c.env, `/1/user/${apiName(user)}/playing-now`, API_FETCH_FEE_CENTS);
   const row = await c.env.DB.prepare('SELECT * FROM playing_now WHERE user_id = ? AND expires_at > ?')
     .bind(user.id, Date.now()).first<ListenRow & { expires_at: number }>();
   const listens = row
     ? [(() => {
-        const json = listenJson(row, user.handle) as Record<string, unknown>;
+        const json = listenJson(row, apiName(user)) as Record<string, unknown>;
         delete json.listened_at;
         return json;
       })()]
     : [];
   return c.json({
-    payload: { count: listens.length, user_id: user.handle, playing_now: true, listens },
+    payload: { count: listens.length, user_id: apiName(user), playing_now: true, listens },
+  });
+});
+
+// Charts: listening, itemised over time. Premium paperwork - a larger fee applies.
+const RANGES: Record<string, { seconds: number; monthly?: boolean }> = {
+  week: { seconds: 7 * 86400 },
+  month: { seconds: 30 * 86400 },
+  year: { seconds: 365 * 86400 },
+  all_time: { seconds: 0, monthly: true },
+};
+
+app.get('/user/:user_name/charts', async c => {
+  const name = c.req.param('user_name');
+  const user = await userByName(c.env, name);
+  if (!user) return lbError(404, `user ${name} not found`);
+  const range = RANGES[c.req.query('range') ?? ''] ?? RANGES.month;
+  const rangeName = RANGES[c.req.query('range') ?? ''] ? (c.req.query('range') as string) : 'month';
+  await meterRead(c.req.raw, c.env, `/1/user/${apiName(user)}/charts`, CHART_FEE_CENTS);
+
+  let buckets: { period: string; listen_count: number }[];
+  if (range.monthly) {
+    buckets = (await c.env.DB.prepare(
+      `SELECT strftime('%Y-%m', listened_at, 'unixepoch') AS period, COUNT(*) AS listen_count
+       FROM listens WHERE user_id = ? GROUP BY period ORDER BY period ASC`).bind(user.id).all()).results as typeof buckets;
+  } else {
+    const since = Math.floor(Date.now() / 1000) - range.seconds;
+    const rows = (await c.env.DB.prepare(
+      `SELECT date(listened_at, 'unixepoch') AS period, COUNT(*) AS listen_count
+       FROM listens WHERE user_id = ? AND listened_at > ? GROUP BY period ORDER BY period ASC`)
+      .bind(user.id, since).all()).results as { period: string; listen_count: number }[];
+    // Zero-fill the days with nothing on file; an itemised record accounts for quiet days too.
+    const byDay = new Map(rows.map(r => [r.period, r.listen_count]));
+    buckets = [];
+    const dayMs = 86400 * 1000;
+    const start = new Date((Math.floor(Date.now() / 1000) - range.seconds) * 1000);
+    for (let t = Math.floor(start.getTime() / dayMs) * dayMs; t <= Date.now(); t += dayMs) {
+      const day = new Date(t).toISOString().slice(0, 10);
+      buckets.push({ period: day, listen_count: byDay.get(day) ?? 0 });
+    }
+  }
+  return c.json({
+    payload: {
+      user_id: apiName(user),
+      range: rangeName,
+      fee: 'This chart was not free.',
+      buckets,
+    },
   });
 });
 

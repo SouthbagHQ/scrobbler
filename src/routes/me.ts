@@ -8,9 +8,14 @@ import { body, fail, str } from '../lib/http';
 import { centralStatus, FROZEN_TEXT, STATUS_UNKNOWN_TEXT } from '../lib/identity';
 import { newId, randomToken, sha256 } from '../lib/ids';
 import { cleanListen, recordListen, SCROBBLE_FEE_CENTS, type RecordOutcome } from '../lib/listens';
-import { money } from '../lib/banking';
+import { API_FETCH_FEE_CENTS, charge, meter, money } from '../lib/banking';
 
 const app = new Hono<AppEnv>();
+
+/** Changing your username costs this much. Choosing the first one is free. */
+export const USERNAME_FEE_CENTS = 100;
+
+const USERNAME_RE = /^[a-z0-9_]{3,20}$/;
 
 /** Session user with the central freeze answer enforced fresh. */
 async function requireFreshUser(request: Request, env: Env): Promise<SessionUser> {
@@ -27,17 +32,23 @@ app.get('/me', async c => {
   if (!user) return c.json({ authenticated: false });
   return c.json({
     authenticated: true,
-    user: { id: user.id, handle: user.handle, name: user.name, email: user.email },
+    user: { id: user.id, handle: user.handle, username: user.username, name: user.name, email: user.email },
     fee_per_track_cents: SCROBBLE_FEE_CENTS,
+    username_fee_cents: USERNAME_FEE_CENTS,
   });
 });
 
 app.get('/me/stats', async c => {
   const user = await requireFreshUser(c.req.raw, c.env);
+  await meter(c.env, user, '/api/me/stats', API_FETCH_FEE_CENTS);
   const db = c.env.DB;
   const totals = await db.prepare(
     'SELECT COUNT(*) AS listens, COALESCE(SUM(fee_cents), 0) AS fees_paid_cents FROM listens WHERE user_id = ?')
     .bind(user.id).first<{ listens: number; fees_paid_cents: number }>();
+  const apiFees = await db.prepare(
+    'SELECT COALESCE(SUM(fee_cents), 0) AS api_fees_cents FROM api_fees WHERE user_id = ?')
+    .bind(user.id).first<{ api_fees_cents: number }>();
+  const apiFeesCents = (apiFees?.api_fees_cents ?? 0) + API_FETCH_FEE_CENTS; // this request included
   const since = Math.floor(Date.now() / 1000) - 7 * 86400;
   const topArtists = (await db.prepare(
     `SELECT artist_name AS name, COUNT(*) AS plays FROM listens WHERE user_id = ?
@@ -50,8 +61,9 @@ app.get('/me/stats', async c => {
      GROUP BY artist_name ORDER BY plays DESC, name ASC LIMIT 10`).bind(user.id, since).all()).results;
   return c.json({
     listens: totals?.listens ?? 0,
-    fees_paid_cents: totals?.fees_paid_cents ?? 0,
-    fees_paid: money(totals?.fees_paid_cents ?? 0),
+    fees_paid_cents: (totals?.fees_paid_cents ?? 0) + apiFeesCents,
+    fees_paid: money((totals?.fees_paid_cents ?? 0) + apiFeesCents),
+    api_fees: money(apiFeesCents),
     fee_per_track_cents: SCROBBLE_FEE_CENTS,
     top_artists: topArtists,
     top_tracks: topTracks,
@@ -129,3 +141,40 @@ app.delete('/tokens/:id', async c => {
 });
 
 export default app;
+
+/** Choose your username (free the first time) or change it (a fee applies). */
+app.post('/me/username', async c => {
+  const user = await requireFreshUser(c.req.raw, c.env);
+  const doc = await body<{ username?: string }>(c);
+  const input = str(doc.username, 40).toLowerCase();
+  if (!USERNAME_RE.test(input)) {
+    fail(400, 'Usernames are 3-20 characters: lowercase letters, digits and underscores.');
+  }
+  if (input === user.username) {
+    return c.json({ ok: true, username: user.username, fee_cents: 0, unchanged: true });
+  }
+  const taken = await c.env.DB.prepare('SELECT 1 FROM users WHERE username = ? AND id != ?')
+    .bind(input, user.id).first();
+  if (taken) fail(409, 'That username is taken.');
+
+  const first = user.username == null;
+  let feeCents = 0;
+  if (!first) {
+    // Charge first; the idempotency key makes a retried change to the same name a no-op.
+    const key = `scrobbler-rename-${await sha256(`${user.id}|${user.username}|${input}`)}`;
+    await charge(c.env, user, USERNAME_FEE_CENTS, `Username change: ${user.username} -> ${input}`, key);
+    feeCents = USERNAME_FEE_CENTS;
+  }
+  await c.env.DB.prepare('UPDATE users SET username = ?, updated_at = ? WHERE id = ?')
+    .bind(input, Date.now(), user.id).run();
+  return c.json({
+    ok: true,
+    username: input,
+    first,
+    fee_cents: feeCents,
+    fee: money(feeCents),
+    notice: first
+      ? 'Username recorded. The next one costs money.'
+      : `Username changed. Fee collected: ${money(feeCents)}. The old name no longer works.`,
+  });
+});
